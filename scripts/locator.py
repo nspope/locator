@@ -109,6 +109,7 @@ args=parser.parse_args()
 #set seed and gpu
 if args.seed is not None:
     np.random.seed(args.seed)
+    tf.random.set_seed(args.seed)#DEBUG TODO add this as separate argument "tf_seed" to get reproducible results
 if args.gpu_number is not None:
     os.environ["CUDA_VISIBLE_DEVICES"]=args.gpu_number
 
@@ -220,7 +221,7 @@ def make_histogram_weights(trainlocs, bins):
 
 def load_sample_weights(weightpath, trainsamps):
     weightdf = pd.read_csv(weightpath, sep='\t')
-    weightdf.set_index('sampleID')
+    weightdf.set_index('sampleID', inplace=True)
     weights = weightdf.loc[trainsamps, 'sample_weight']
 
     return weights
@@ -295,6 +296,7 @@ def load_network(traingen,dropout_prop):
     model.add(tf.keras.layers.Dense(2))
     model.compile(optimizer="Adam",
                   loss=euclidean_distance_loss)
+    for layer in model.layers: print(layer.get_config(), layer.get_weights())#DEBUG
     return model
 
 def load_callbacks(boot):
@@ -460,12 +462,22 @@ else:
         genotypes,samples=load_genotypes()
         sample_data,locs=sort_samples(samples)
         meanlong,sdlong,meanlat,sdlat,locs=normalize_locs(locs)
+        unnormedlocs=locs # save un-normalized locs for sample weighting
         ac=filter_snps(genotypes)
         checkpointer,earlystop,reducelr=load_callbacks("FULL")
         train,test,traingen,testgen,trainlocs,testlocs,pred,predgen=split_train_test(ac,locs)
+        if args.weight_samples:
+            if args.weight_samples == 'tsv':
+                sample_weights = load_sample_weights(args.sample_weights, samples[train])
+            elif args.weight_samples == 'histogram':
+                sample_weights = make_histogram_weights(unnormedlocs[train], args.bins)
+            elif args.weight_samples == 'kernel_density':
+                sample_weights = make_kd_weights(unnormedlocs[train], args.lam, args.bandwidth)
+        else:
+            sample_weights = None
         model=load_network(traingen,args.dropout_prop)
         start=time.time()
-        history,model=train_network(model,traingen,testgen,trainlocs,testlocs)
+        history,model=train_network(model,traingen,testgen,trainlocs,testlocs,sample_weights)
         dists=predict_locs(model,predgen,sdlong,meanlong,sdlat,meanlat,testlocs,pred,samples,testgen)
         plot_history(history,dists,args.gnuplot)
         if not args.keep_weights:
@@ -483,7 +495,7 @@ else:
         train,test,traingen,testgen,trainlocs,testlocs,pred,predgen=split_train_test(ac,locs)
         model=load_network(traingen,args.dropout_prop)
         start=time.time()
-        history,model=train_network(model,traingen,testgen,trainlocs,testlocs)
+        history,model=train_network(model,traingen,testgen,trainlocs,testlocs,sample_weights)
         dists=predict_locs(model,predgen,sdlong,meanlong,sdlat,meanlat,testlocs,pred,samples,testgen)
         plot_history(history,dists,args.gnuplot)
         if not args.keep_weights:
@@ -504,7 +516,7 @@ else:
             predgen2=predgen2[:,site_order]
             model=load_network(traingen2,args.dropout_prop)
             start=time.time()
-            history,model=train_network(model,traingen2,testgen2,trainlocs,testlocs)
+            history,model=train_network(model,traingen2,testgen2,trainlocs,testlocs,sample_weights)
             dists=predict_locs(model,predgen2,sdlong,meanlong,sdlat,meanlat,testlocs,pred,samples,testgen2)
             plot_history(history,dists,args.gnuplot)
             if not args.keep_weights:
@@ -523,7 +535,7 @@ else:
         train,test,traingen,testgen,trainlocs,testlocs,pred,predgen=split_train_test(ac,locs)
         model=load_network(traingen,args.dropout_prop)
         start=time.time()
-        history,model=train_network(model,traingen,testgen,trainlocs,testlocs)
+        history,model=train_network(model,traingen,testgen,trainlocs,testlocs,sample_weights)
         dists=predict_locs(model,predgen,sdlong,meanlong,sdlat,meanlat,testlocs,pred,samples,testgen)
         plot_history(history,dists,args.gnuplot)
         end=time.time()
